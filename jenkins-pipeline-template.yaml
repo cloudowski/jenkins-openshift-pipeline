@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: jenkins-buildconfig
+  namespace: openshift
+  description: |-
+    BuildConfig for Jenkins based on custom code usng s2i
+
+  iconClass: icon-jenkins
+  openshift.io/display-name: Jenkins BuildConfig
+  openshift.io/provider-display-name: cloudowski.com
+  tags: jenkins, build
+
+objects:
+  - apiVersion: v1
+    kind: BuildConfig
+    metadata:
+      name: jenkins-${GIT_BRANCH}
+      namespace: ${PROJECT}
+    spec:
+      source:
+        git:
+          uri: ${GIT_REPO}
+          ref: ${GIT_BRANCH}
+        type: Git
+      strategy:
+        type: Source
+        sourceStrategy:
+          from:
+            kind: ImageStreamTag
+            name: jenkins:latest
+            namespace: openshift
+
+      output:
+        to:
+          kind: ImageStreamTag
+          name: jenkins-${GIT_BRANCH}:latest
+          namespace: ${PROJECT}
+    triggers: []
+
+  - apiVersion: v1
+    kind: ImageStream
+    metadata:
+      labels:
+        build: jenkins-${GIT_BRANCH}
+      name: jenkins-${GIT_BRANCH}
+      namespace: ${PROJECT}
+    spec:
+      lookupPolicy:
+        local: false
+      referencePolicy:
+        type: Local
+
+  - apiVersion: "v1"
+    kind: "BuildConfig"
+    metadata:
+      name: "build-image-jenkins-${GIT_BRANCH}"
+      namespace: ${PROJECT}
+    spec:
+      source:
+        git:
+          uri: ${GIT_REPO}
+          ref: ${GIT_BRANCH}
+        type: Git
+      strategy:
+        jenkinsPipelineStrategy:
+          jenkinsfile: |-
+            def dateFormat = new java.text.SimpleDateFormat("yyyyMMdd'-'HHmmss")
+            snapshotVersion = dateFormat.format(new Date())
+
+            pipeline {
+              agent any
+
+              stages {
+
+                stage('Build Image') {
+                  steps {
+
+                    script {
+                      openshift.withCluster() {
+                        openshift.withProject("${PROJECT}") {
+                          def build = openshift.selector("bc", "jenkins-${GIT_BRANCH}").startBuild()
+                          def build_logs = build.logs("-f")
+                          // sometimes status is 'Running' after it has actually finished
+                          sleep 2
+                          def build_obj = build.object()
+                          echo "Build status: ${build_obj.status.phase}"
+                          if (build_obj.status.phase != 'Complete' || build_obj.status.phase == 'Running') {
+                              error 'Build failed'
+                          }
+                          imageDigest = build_obj.status.output.to.imageDigest
+                          echo "Tagging ${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest} as ${PROJECT}/jenkins-${GIT_BRANCH}:${snapshotVersion} (and ${PROJECT}/jenkins-${GIT_BRANCH}:latest)"
+                          openshift.tag("${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest}", "${PROJECT}/jenkins-${GIT_BRANCH}:latest")
+                          openshift.tag("${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest}", "${PROJECT}/jenkins-${GIT_BRANCH}:${snapshotVersion}")
+                        }
+                      }
+                    }
+
+                  }
+                }
+
+                stage('Publish?') {
+                  agent any
+                  when {
+                    expression { "${GIT_BRANCH}" == "master" }
+                  }
+                  input {
+                    id "publishImageTag"
+                    message "Publish 'jenkins-${GIT_BRANCH}:${snapshotVersion}' as latest? Enter destination tag"
+                     parameters {
+                       string(defaultValue: 'latest', description: 'Tag for the destination Image ', name: 'IMAGETAG')
+                    }
+                  }
+                  steps {
+                    script {
+                      imageTag = "${IMAGETAG}"
+                    }
+                    echo "Provided imagetag: ${IMAGETAG}"
+                  }
+                }
+
+                stage('Publish Image') {
+                  when {
+                    expression { "${GIT_BRANCH}" == "master" }
+                  }
+
+                  steps {
+                    script {
+                      openshift.withCluster() {
+                        openshift.withProject("openshift") {
+                          echo "Tagging ${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest} as openshift/jenkins:${imageTag} (and openshift/jenkins:${snapshotVersion})"
+                          openshift.tag("--reference-policy=local","${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest}", "openshift/jenkins:${imageTag}")
+                          openshift.tag("--reference-policy=local","${PROJECT}/jenkins-${GIT_BRANCH}@${imageDigest}", "openshift/jenkins:${snapshotVersion}")
+                        }
+                      }
+                    }
+                  }
+                }
+
+
+              }
+            }
+
+parameters:
+  - name: GIT_BRANCH
+    description: "Name of branch"
+    value: master
+  - name: PROJECT
+    description: "Name of the destination project"
+    value: jenkins-builder
+  - name: GIT_REPO
+    description: "URL of the repository with Jenkins configuratin"
+    value: git@gitlab.com:cloudowski/jenkins-openshift.git
