@@ -22,6 +22,10 @@ container image for OpenShift.
 
   ```
   oc process -n openshift jenkins-persistent -p MEMORY_LIMIT=1024M|oc apply -f- -n jenkins-builder
+  oc set env dc/jenkins \
+  OVERRIDE_PV_CONFIG_WITH_IMAGE_CONFIG=true \
+  OVERRIDE_PV_PLUGINS_WITH_IMAGE_PLUGINS=true \
+  CASC_JENKINS_CONFIG=/var/lib/jenkins/jenkins-casc.yaml
   ```
 
 * Assign an admin role to jenkins
