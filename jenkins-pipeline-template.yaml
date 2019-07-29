@@ -149,5 +149,5 @@ parameters:
     description: "Name of the destination project"
     value: jenkins-builder
   - name: GIT_REPO
-    description: "URL of the repository with Jenkins configuratin"
-    value: git@gitlab.com:cloudowski/jenkins-openshift.git
+    description: "URL of the repository with Jenkins configuration"
+    value: https://github.com/cloudowski/jenkins-openshift-pipeline
